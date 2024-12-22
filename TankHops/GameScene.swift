@@ -10,23 +10,25 @@ import SpriteKit
 class GameScene: SKScene, SKPhysicsContactDelegate {
     
     // MARK: - Узлы
-    var playerTank: SKNode!                 // Танк игрока
+    private var playerTank: SKNode?
     var enemyTanks: [SKNode] = []           // Массив вражеских танков
     
     // Флаги для физики
-    let bulletCategory:  UInt32 = 0x1 << 0   // Пули
-    let enemyCategory:   UInt32 = 0x1 << 1   // Враги
-    let playerCategory:  UInt32 = 0x1 << 2   // Игрок (если понадобится)
-
+    let playerCategory: UInt32 = 0x1 << 0    // 1
+    let enemyCategory: UInt32 = 0x1 << 1     // 2
+    let playerBulletCategory: UInt32 = 0x1 << 2  // 4
+    let enemyBulletCategory: UInt32 = 0x1 << 3   // 8
+    let medkitCategory: UInt32 = 0x1 << 4    // 16
+    
     // MARK: - Параметры спавна
     var spawnCount = 0                       // Сколько врагов уже заспавнилось
     let maxEnemies = 100                    // Лимит врагов на "уровень"
 
     // MARK: - Жизни игрока
-    var playerLivesLabel: SKLabelNode!
+    private var playerLivesLabel: SKLabelNode?
     var playerLives = 3 {
         didSet {
-            playerLivesLabel.text = "Lives: \(playerLives)"
+            playerLivesLabel?.text = "Lives: \(playerLives)"
             if playerLives <= 0 {
                 gameOver()
             }
@@ -34,10 +36,10 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
     }
     
     // MARK: - Счёт
-    var scoreLabel: SKLabelNode!
+    private var scoreLabel: SKLabelNode?
     var score = 0 {
         didSet {
-            scoreLabel.text = "Score: \(score)"
+            scoreLabel?.text = "Score: \(score)"
         }
     }
     
@@ -59,46 +61,130 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
     private var moveSpeed: CGFloat = 150
     private var gameOverLabel: SKLabelNode?
     
+    // Параметры игрока
+    private var playerHealth: Int = 100 {
+        didSet {
+            updateHealthBar()
+        }
+    }
+    private var healthBar: SKShapeNode?
+    private var healthBarBackground: SKShapeNode?
+    
+    // Параметры уровней
+    private var currentLevel = 1
+    private var levelLabel: SKLabelNode?
+    private var enemyFireRate: TimeInterval = 2.0
+    
+    // Категории для физики
+    let powerupCategory: UInt32 = 0x1 << 5
+    
+    // Константы для управления
+    private let minMoveDistance: CGFloat = 1.0
+    private let maxMoveSpeed: CGFloat = 300.0
+    private let minMoveSpeed: CGFloat = 150.0
+    private let touchAreaSize: CGFloat = 44.0 // Минимальный размер для iOS
+    
+    // Константы для урона
+    private let collisionDamage: Int = 30
+    private let explosionRadius: CGFloat = 50.0
+    
+    // Обновим константы для разных типов взрывов
+    private enum ExplosionType {
+        case small  // Для снарядов
+        case medium // Для танков
+        case large  // Для особых эффектов
+        
+        var config: (scale: CGFloat, particles: Int, speed: CGFloat, duration: TimeInterval) {
+            switch self {
+            case .small:
+                return (0.3, 15, 80, 0.2)  // Маленький быстрый взрыв
+            case .medium:
+                return (0.5, 25, 120, 0.3) // Средний взрыв
+            case .large:
+                return (0.7, 35, 150, 0.4) // Большой взрыв
+            }
+        }
+    }
+    
     // MARK: - didMove
     override func didMove(to view: SKView) {
-        // Настройки сцены
+        // Сначала настраиваем базовые параметры сцены
         self.size = view.bounds.size
         self.scaleMode = .aspectFill
+        backgroundColor = .white
         
-        // Оптимизация физики
-        physicsWorld.speed = 1.0
+        // Настраиваем физику
         physicsWorld.gravity = .zero
         physicsWorld.contactDelegate = self
         
-        // Добавляем границы экрана
-        let borderBody = SKPhysicsBody(edgeLoopFrom: self.frame)
-        borderBody.friction = 0
-        borderBody.restitution = 0
-        borderBody.categoryBitMask = 0
-        borderBody.collisionBitMask = 0
-        self.physicsBody = borderBody
-        
-        backgroundColor = .white
-        
-        // Создаём объекты
+        // Инициализируем все компоненты
+        initializeHUD()
         createPlayerTank()
-        createHUD()
         
-        // Оптимизируем спавн врагов
-        let spawn = SKAction.run { [weak self] in
-            guard let self = self else { return }
-            if self.spawnCount < self.maxEnemies {
-                self.spawnEnemyTank()
-                self.spawnCount += 1
-            }
+        // Запускаем игровую логику только после инициализации
+        startGame()
+    }
+    
+    // Обновим метод initializeHUD для лучшего UI
+    private func initializeHUD() {
+        // Учитываем Dynamic Island и отступы
+        let topSafeArea: CGFloat = 60 // Отступ для Dynamic Island
+        let margin: CGFloat = 20
+        
+        // Создаем контейнер для счета
+        let scoreContainer = SKShapeNode(rectOf: CGSize(width: 120, height: 40),
+                                       cornerRadius: 10)
+        scoreContainer.fillColor = UIColor.black.withAlphaComponent(0.5)
+        scoreContainer.strokeColor = .white
+        scoreContainer.lineWidth = 1
+        scoreContainer.position = CGPoint(x: margin + 60,
+                                        y: size.height - topSafeArea)
+        addChild(scoreContainer)
+        
+        // Настраиваем счет
+        scoreLabel = SKLabelNode(fontNamed: "AvenirNext-Bold")
+        if let scoreLabel = scoreLabel {
+            scoreLabel.fontSize = 20
+            scoreLabel.fontColor = .white
+            scoreLabel.verticalAlignmentMode = .center
+            scoreLabel.position = scoreContainer.position
+            scoreLabel.text = "Score: 0"
+            scoreLabel.zPosition = 100
+            addChild(scoreLabel)
         }
-        let wait = SKAction.wait(forDuration: 2.0) // Увеличиваем интервал
-        run(SKAction.repeatForever(SKAction.sequence([spawn, wait])))
+        
+        // Создаем новый дизайн полоски здоровья
+        let healthBarWidth: CGFloat = size.width * 0.4
+        let healthBarHeight: CGFloat = 8
+        
+        healthBarBackground = SKShapeNode(rectOf: CGSize(width: healthBarWidth,
+                                                        height: healthBarHeight),
+                                        cornerRadius: 4)
+        if let healthBg = healthBarBackground {
+            healthBg.fillColor = UIColor.darkGray.withAlphaComponent(0.5)
+            healthBg.strokeColor = .white
+            healthBg.lineWidth = 1
+            healthBg.position = CGPoint(x: size.width - healthBarWidth/2 - margin,
+                                      y: size.height - topSafeArea)
+            healthBg.zPosition = 90
+            addChild(healthBg)
+        }
+        
+        healthBar = SKShapeNode(rectOf: CGSize(width: healthBarWidth,
+                                              height: healthBarHeight),
+                               cornerRadius: 4)
+        if let healthBar = healthBar {
+            healthBar.fillColor = .systemGreen
+            healthBar.strokeColor = .clear
+            healthBar.position = healthBarBackground?.position ?? .zero
+            healthBar.zPosition = 95
+            addChild(healthBar)
+        }
     }
     
     // MARK: - Создание танка игрока
     private func createPlayerTank() {
-        playerTank = SKNode()
+        let tank = SKNode()
         
         // Основной корпус (более детализированный)
         let bodyPath = UIBezierPath()
@@ -154,45 +240,97 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         gunShape.lineWidth = 1
         
         // Добавляем все части
-        playerTank.addChild(leftTrack)
-        playerTank.addChild(rightTrack)
-        playerTank.addChild(bodyShape)
-        playerTank.addChild(turretShape)
-        playerTank.addChild(gunShape)
+        tank.addChild(leftTrack)
+        tank.addChild(rightTrack)
+        tank.addChild(bodyShape)
+        tank.addChild(turretShape)
+        tank.addChild(gunShape)
         
-        // Позиционирование и физика
+        // Позционирование и физика
         let startY = size.height * 0.2
-        playerTank.position = CGPoint(x: size.width / 2, y: startY)
-        playerTank.name = "playerTank"
+        tank.position = CGPoint(x: size.width / 2, y: startY)
+        tank.name = "playerTank"
         
-        let tankBody = SKPhysicsBody(rectangleOf: CGSize(width: 50, height: 40))
-        tankBody.isDynamic = false
+        let tankBody = SKPhysicsBody(rectangleOf: CGSize(width: 40, height: 30))
+        tankBody.isDynamic = true
+        tankBody.affectedByGravity = false
         tankBody.categoryBitMask = playerCategory
-        tankBody.contactTestBitMask = enemyCategory
+        tankBody.contactTestBitMask = enemyCategory | enemyBulletCategory
         tankBody.collisionBitMask = 0
-        playerTank.physicsBody = tankBody
+        tank.physicsBody = tankBody
         
-        addChild(playerTank)
+        playerTank = tank
+        
+        if let playerTank = playerTank {
+            addChild(playerTank)
+        }
     }
     
-    // MARK: - Создание интерфейса (HUD)
-    private func createHUD() {
-        // Счёт
-        scoreLabel = SKLabelNode(fontNamed: "Helvetica")
-        scoreLabel.fontSize = 20
-        scoreLabel.fontColor = .black
-        scoreLabel.position = CGPoint(x: 60, y: size.height - 40)
-        scoreLabel.text = "Score: \(score)"
-        addChild(scoreLabel)
+    private func startGame() {
+        if playerTank == nil {
+            print("Error: Player tank not initialized")
+            return
+        }
         
-        // Жизни
-        playerLivesLabel = SKLabelNode(fontNamed: "Helvetica")
-        playerLivesLabel.fontSize = 20
-        playerLivesLabel.fontColor = .red
-        playerLivesLabel.position = CGPoint(x: size.width - 60,
-                                            y: size.height - 40)
-        playerLivesLabel.text = "Lives: \(playerLives)"
-        addChild(playerLivesLabel)
+        // Проверяем инициализацию UI компонентов
+        if scoreLabel == nil || healthBar == nil {
+            print("Error: UI components not initialized")
+            return
+        }
+        
+        // Настраиваем начальные параметры
+        score = 0
+        playerHealth = 100
+        playerLives = 3
+        spawnCount = 0
+        
+        // Обновляем UI
+        updateUI()
+        
+        // Запускаем спавн врагов
+        spawnEnemies()
+    }
+    
+    // Безопасное обновление UI
+    private func updateUI() {
+        // Обновляем счет с анимацией
+        if let scoreLabel = scoreLabel {
+            let scaleUp = SKAction.scale(to: 1.2, duration: 0.1)
+            let scaleDown = SKAction.scale(to: 1.0, duration: 0.1)
+            scoreLabel.text = "Score: \(score)"
+            scoreLabel.run(SKAction.sequence([scaleUp, scaleDown]))
+        }
+        
+        // Обновляем жизни с визуальным эффектом
+        if let livesLabel = playerLivesLabel {
+            livesLabel.text = String(repeating: "❤️", count: playerLives)
+            let fadeOut = SKAction.fadeAlpha(to: 0.5, duration: 0.1)
+            let fadeIn = SKAction.fadeAlpha(to: 1.0, duration: 0.1)
+            livesLabel.run(SKAction.sequence([fadeOut, fadeIn]))
+        }
+        
+        updateHealthBar()
+    }
+    
+    // Обновление полоски здоровья
+    private func updateHealthBar() {
+        guard let healthBar = healthBar else { return }
+        
+        let healthPercent = CGFloat(playerHealth) / 100.0
+        let newWidth = 200 * healthPercent
+        let newRect = CGRect(x: -100, y: -7.5,
+                            width: newWidth, height: 15)
+        healthBar.path = UIBezierPath(roundedRect: newRect,
+                                     cornerRadius: 5).cgPath
+        
+        // зменение цвета в зависимости от здоровья
+        if healthPercent > 0.7 {
+            healthBar.fillColor = .green
+        } else if healthPercent > 0.3 {
+            healthBar.fillColor = .yellow
+        } else {
+            healthBar.fillColor = .red
+        }
     }
     
     // MARK: - Спавн вражеского танка
@@ -256,12 +394,12 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         let randomX = CGFloat.random(in: margin...(size.width - margin))
         enemyTank.position = CGPoint(x: randomX, y: size.height + 10)
         
-        let physicsBody = SKPhysicsBody(rectangleOf: CGSize(width: 20, height: 16))
+        let physicsBody = SKPhysicsBody(rectangleOf: CGSize(width: 40, height: 30))
         physicsBody.isDynamic = true
         physicsBody.affectedByGravity = false
         physicsBody.categoryBitMask = enemyCategory
-        physicsBody.contactTestBitMask = bulletCategory | playerCategory
-        physicsBody.collisionBitMask = 0
+        physicsBody.contactTestBitMask = playerCategory | playerBulletCategory
+        physicsBody.collisionBitMask = 0 // Отключаем физическую коллизию
         enemyTank.physicsBody = physicsBody
         
         enemyTank.name = "enemyTank"
@@ -279,49 +417,74 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         }
         
         enemyTank.run(SKAction.sequence([moveAction, removeAction]))
+        
+        // Добавляем периодическую стрельбу
+        let shootAction = SKAction.run { [weak self, weak enemyTank] in
+            guard let self = self,
+                  let enemy = enemyTank,
+                  !self.isPaused,
+                  enemy.parent != nil else { return }
+            self.enemyShoot(from: enemy)
+        }
+        let waitAction = SKAction.wait(forDuration: 2.0) // Стреляем каждые 2 секунды
+        let shootSequence = SKAction.sequence([waitAction, shootAction])
+        enemyTank.run(SKAction.repeatForever(shootSequence))
     }
     
     // MARK: - Выстрел
     private func shoot() {
+        guard let playerTank = playerTank else { return }
+        
         // Ограничиваем количество пуль
-        if activeBullets.count >= 3 { return } // Уменьшаем лимит пуль
+        if activeBullets.count >= 3 { return }
         
         let bulletNode = SKNode()
-        let bulletSize = CGSize(width: 4, height: 8) // Уменьшаем размер пули
+        let bulletSize = CGSize(width: 4, height: 8)
         
         let bullet = SKShapeNode(rectOf: bulletSize, cornerRadius: 1)
         bullet.fillColor = .black
         bullet.strokeColor = .black
-        bullet.lineWidth = 1
         bulletNode.addChild(bullet)
         
+        // Позиционируем пулю относительно танка (из пушки)
         bulletNode.position = CGPoint(x: playerTank.position.x,
-                                    y: playerTank.position.y + 20)
+                                    y: playerTank.position.y + 25) // Увеличили смещение для выстрела из пушки
         
+        // Настраиваем физику пули
         let bulletBody = SKPhysicsBody(rectangleOf: bulletSize)
         bulletBody.isDynamic = true
         bulletBody.affectedByGravity = false
-        bulletBody.categoryBitMask = bulletCategory
+        bulletBody.categoryBitMask = playerBulletCategory
         bulletBody.contactTestBitMask = enemyCategory
         bulletBody.collisionBitMask = 0
-        bulletBody.mass = 0.1
-        bulletBody.velocity = CGVector(dx: 0, dy: 400) // Задаём постоянную скорость
+        bulletBody.usesPreciseCollisionDetection = true
         bulletNode.physicsBody = bulletBody
         
         activeBullets.insert(bulletNode)
         addChild(bulletNode)
         
-        // Автоматическое удаление через 1.5 секунды
-        let removeAction = SKAction.sequence([
-            SKAction.wait(forDuration: 1.5),
-            SKAction.run { [weak self, weak bulletNode] in
-                guard let self = self,
-                      let bullet = bulletNode else { return }
-                bullet.removeFromParent()
-                self.activeBullets.remove(bullet)
-            }
-        ])
-        bulletNode.run(removeAction)
+        // Добавляем движение пули
+        let moveAction = SKAction.moveBy(x: 0, y: size.height + 50, duration: 0.8)
+        let removeAction = SKAction.run { [weak self, weak bulletNode] in
+            guard let self = self,
+                  let bullet = bulletNode else { return }
+            bullet.removeFromParent()
+            self.activeBullets.remove(bullet)
+        }
+        
+        // Добавляем звук выстрела (опционально)
+        let shootSound = SKAction.playSoundFileNamed("shoot.wav", waitForCompletion: false)
+        
+        // Запускаем последовательность действий
+        bulletNode.run(SKAction.sequence([shootSound, moveAction, removeAction]))
+        
+        // Добавляем эффект отдачи танку
+        let recoilUp = SKAction.moveBy(x: 0, y: -2, duration: 0.05)
+        let recoilDown = SKAction.moveBy(x: 0, y: 2, duration: 0.05)
+        playerTank.run(SKAction.sequence([recoilUp, recoilDown]))
+        
+        // Устанавливаем скорость пули
+        bulletBody.velocity = CGVector(dx: 0, dy: 400)
     }
     
     // MARK: - touches
@@ -330,32 +493,43 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         let location = touch.location(in: self)
         
         if isPaused {
-            // Проверяем нажатие на кнопку перезапуска
-            if let restart = restartButton,
-               restart.contains(location) {
-                restartGame()
-            }
+            handlePausedTouches(at: location)
             return
         }
         
-        let nodesAtPoint = nodes(at: location)
-        if nodesAtPoint.contains(where: { $0.name == "playerTank" }) {
-            isTouchingTank = true
-            shoot()
-        } else {
-            isMoving = true
-            moveTankTo(point: location)
+        // Увеличиваем область касания для танка
+        let touchRect = CGRect(x: location.x - touchAreaSize/2,
+                             y: location.y - touchAreaSize/2,
+                             width: touchAreaSize,
+                             height: touchAreaSize)
+        
+        if let playerTank = playerTank {
+            if touchRect.contains(playerTank.position) {
+                isTouchingTank = true
+                shoot() // Стреляем при касании танка
+            } else {
+                isMoving = true
+                lastTouchLocation = location
+                moveTankTo(point: location)
+            }
         }
-        lastTouchLocation = location
     }
     
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = touches.first,
-              !isPaused,
-              isMoving else { return }
+              !isPaused else { return }
         
         let location = touch.location(in: self)
-        moveTankTo(point: location)
+        
+        if isTouchingTank {
+            // Можно добавить автоматическую стрельбу при удержании
+            if arc4random_uniform(100) < 10 { // 10% шанс выстрела ри каждом обновлении
+                shoot()
+            }
+        } else if isMoving {
+            lastTouchLocation = location
+            moveTankTo(point: location)
+        }
     }
     
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -365,59 +539,122 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
     
     // MARK: - Свободное перемещение танка
     private func moveTankTo(point: CGPoint) {
-        // Ограничения движения
-        let minY: CGFloat = 50
+        guard let tank = playerTank else { return }
+        
+        // Ограничения движения с учетом размера танка
+        let tankHalfWidth: CGFloat = 25
+        let tankHalfHeight: CGFloat = 20
+        let minY: CGFloat = tankHalfHeight + 50
         let maxY: CGFloat = size.height * 0.4
-        let margin: CGFloat = 40
+        let margin: CGFloat = tankHalfWidth + 10
         
         let targetX = min(max(point.x, margin), size.width - margin)
         let targetY = min(max(point.y, minY), maxY)
-        
         let targetPoint = CGPoint(x: targetX, y: targetY)
         
-        // Плавное движение с постоянной скоростью
-        let currentPos = playerTank.position
-        let distance = hypot(targetPoint.x - currentPos.x, targetPoint.y - currentPos.y)
-        
-        if distance < 1 { return } // Избегаем микродвижений
-        
-        // Вычисляем направление
+        // Плавное движение с адаптивной скоростью
+        let currentPos = tank.position
         let dx = targetPoint.x - currentPos.x
         let dy = targetPoint.y - currentPos.y
+        let distance = sqrt(dx*dx + dy*dy)
+        
+        if distance < minMoveDistance { return }
+        
+        // Адаптивная скорость: быстрее на большие расстояния
+        let speedFactor = min(distance / 100.0, 1.0)
+        let speed = minMoveSpeed + (maxMoveSpeed - minMoveSpeed) * speedFactor
+        
         let normalizedDx = dx / distance
         let normalizedDy = dy / distance
         
-        // Применяем движение
-        let newX = currentPos.x + (normalizedDx * moveSpeed * 0.016) // 60 FPS
-        let newY = currentPos.y + (normalizedDy * moveSpeed * 0.016)
+        let newX = currentPos.x + (normalizedDx * speed * 0.016)
+        let newY = currentPos.y + (normalizedDy * speed * 0.016)
         
-        playerTank.position = CGPoint(x: newX, y: newY)
+        tank.position = CGPoint(x: newX, y: newY)
     }
     
     // MARK: - SKPhysicsContactDelegate
     func didBegin(_ contact: SKPhysicsContact) {
-        let firstBody: SKPhysicsBody
-        let secondBody: SKPhysicsBody
+        let firstBody = contact.bodyA
+        let secondBody = contact.bodyB
         
-        if contact.bodyA.categoryBitMask < contact.bodyB.categoryBitMask {
-            firstBody = contact.bodyA
-            secondBody = contact.bodyB
-        } else {
-            firstBody = contact.bodyB
-            secondBody = contact.bodyA
+        // Столкновение с вражеским танком
+        if (firstBody.categoryBitMask == playerCategory && 
+            secondBody.categoryBitMask == enemyCategory) ||
+           (firstBody.categoryBitMask == enemyCategory && 
+            secondBody.categoryBitMask == playerCategory) {
+            
+            let enemyNode = firstBody.categoryBitMask == enemyCategory ? 
+                           firstBody.node : secondBody.node
+            let playerNode = firstBody.categoryBitMask == playerCategory ? 
+                           firstBody.node : secondBody.node
+            
+            if let enemy = enemyNode,
+               let player = playerNode {
+                // Создаем взрыв большого размера
+                createExplosion(at: enemy.position, type: .large)
+                
+                // Наносим урон игроку
+                damagePlayer(amount: collisionDamage)
+                
+                // Удаляем вражеский танк
+                enemy.removeFromParent()
+                if let index = enemyTanks.firstIndex(of: enemy) {
+                    enemyTanks.remove(at: index)
+                }
+                
+                // Добавляем эффект отбрасывания игрока
+                let dx = player.position.x - enemy.position.x
+                let dy = player.position.y - enemy.position.y
+                let distance = sqrt(dx*dx + dy*dy)
+                let knockbackForce: CGFloat = 100
+                
+                if distance > 0 {
+                    let knockbackX = (dx / distance) * knockbackForce
+                    let knockbackY = (dy / distance) * knockbackForce
+                    
+                    let knockbackAction = SKAction.move(by: CGVector(dx: knockbackX, dy: knockbackY),
+                                                      duration: 0.1)
+                    player.run(knockbackAction)
+                }
+            }
         }
         
-        // Проверяем столкновение пули с врагом
-        if firstBody.categoryBitMask == bulletCategory && 
-           secondBody.categoryBitMask == enemyCategory {
-            handleBulletEnemyCollision(bullet: firstBody.node, enemy: secondBody.node)
+        // Попадание вражеской пули
+        if firstBody.categoryBitMask == playerCategory &&
+           secondBody.node?.name == "enemyBullet" {
+            if let bulletPosition = secondBody.node?.position {
+                // Создаем маленький взрыв
+                createExplosion(at: bulletPosition, type: .small)
+                secondBody.node?.removeFromParent()
+                damagePlayer(amount: 10)
+            }
         }
-        // Проверяем столкновение игрока с врагом
-        else if (firstBody.categoryBitMask == playerCategory && 
-                 secondBody.categoryBitMask == enemyCategory) ||
-                (firstBody.categoryBitMask == enemyCategory && 
-                 secondBody.categoryBitMask == playerCategory) {
-            handlePlayerEnemyCollision()
+        
+        // Столкновение пули игрока с врагом
+        if (firstBody.categoryBitMask == playerBulletCategory && 
+            secondBody.categoryBitMask == enemyCategory) ||
+           (firstBody.categoryBitMask == enemyCategory && 
+            secondBody.categoryBitMask == playerBulletCategory) {
+            
+            let bullet = firstBody.categoryBitMask == playerBulletCategory ? 
+                        firstBody.node : secondBody.node
+            let enemy = firstBody.categoryBitMask == enemyCategory ? 
+                       firstBody.node : secondBody.node
+            
+            handleBulletEnemyCollision(bullet: bullet, enemy: enemy)
+        }
+        
+        // Столкновение вражеской пули с игроком
+        if (firstBody.categoryBitMask == enemyBulletCategory && 
+            secondBody.categoryBitMask == playerCategory) ||
+           (firstBody.categoryBitMask == playerCategory && 
+            secondBody.categoryBitMask == enemyBulletCategory) {
+            
+            let bullet = firstBody.categoryBitMask == enemyBulletCategory ? 
+                        firstBody.node : secondBody.node
+            bullet?.removeFromParent()
+            damagePlayer(amount: 10)
         }
     }
     
@@ -449,12 +686,12 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
     override func update(_ currentTime: TimeInterval) {
         super.update(currentTime)
         
-        // Обновляем позицию танка если движемся
+        if playerTank == nil { return }
+        
         if isMoving, let lastLocation = lastTouchLocation {
             moveTankTo(point: lastLocation)
         }
         
-        // Обновляем башни врагов
         updateEnemyTurrets()
     }
     
@@ -466,7 +703,9 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
     }
     
     private func updateEnemyTurret(_ enemy: SKNode) {
-        guard let turret = enemy.childNode(withName: "turret") else { return }
+        guard let playerTank = playerTank,
+              let turret = enemy.childNode(withName: "turret") else { return }
+        
         let dx = playerTank.position.x - enemy.position.x
         let dy = playerTank.position.y - enemy.position.y
         turret.zRotation = atan2(dy, dx) - .pi/2
@@ -478,7 +717,7 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         let halfW: CGFloat = 20
         let halfH: CGFloat = 15
         
-        var pos = playerTank.position
+        var pos = playerTank?.position ?? CGPoint.zero
         // По X
         if pos.x < halfW { pos.x = halfW }
         if pos.x > size.width - halfW { pos.x = size.width - halfW }
@@ -487,7 +726,7 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         if pos.y < halfH { pos.y = halfH }
         if pos.y > size.height - halfH { pos.y = size.height - halfH }
         
-        playerTank.position = pos
+        playerTank?.position = pos
     }
     
     // MARK: - Game Over
@@ -502,7 +741,7 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         gameOverLabel.position = CGPoint(x: size.width / 2,
                                        y: size.height / 2 + 50)
         addChild(gameOverLabel)
-        self.gameOverLabel = gameOverLabel // Сохраняем ссылку
+        self.gameOverLabel = gameOverLabel // Сохраняем сылку
         
         // Создаем кнопку рестарта
         let button = SKShapeNode(rectOf: CGSize(width: 200, height: 50),
@@ -539,7 +778,7 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         restartButton?.removeFromParent()
         restartButton = nil
         
-        // Сбрасываем параметры
+        // Срасываем параметры
         score = 0
         playerLives = 3
         spawnCount = 0
@@ -547,7 +786,10 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
         
         // Возвращаем танк на начальную позицию
         let startY = size.height * 0.2
-        playerTank.position = CGPoint(x: size.width / 2, y: startY)
+        playerTank?.position = CGPoint(x: size.width / 2, y: startY)
+        
+        // Восстанавливаем здоровье
+        playerHealth = 100
         
         // Возобновляем игру
         isPaused = false
@@ -557,10 +799,219 @@ class GameScene: SKScene, SKPhysicsContactDelegate {
     override func didFinishUpdate() {
         super.didFinishUpdate()
         
-        // Очищаем массив врагов от удалённых нодов
+        // Очищаем мссив врагов от удалённых нодов
         enemyTanks.removeAll { $0.parent == nil }
         
         // Очищаем множество пуль от удалённых нодов
         activeBullets = activeBullets.filter { $0.parent != nil }
+    }
+    
+    // Добавим спвн аптечек
+    private func spawnMedkit() {
+        let medkit = SKShapeNode(rectOf: CGSize(width: 20, height: 20),
+                                cornerRadius: 5)
+        medkit.fillColor = .white
+        medkit.strokeColor = .red
+        medkit.lineWidth = 2
+        
+        // Красный крест
+        let cross1 = SKShapeNode(rectOf: CGSize(width: 4, height: 14))
+        let cross2 = SKShapeNode(rectOf: CGSize(width: 14, height: 4))
+        cross1.fillColor = .red
+        cross2.fillColor = .red
+        medkit.addChild(cross1)
+        medkit.addChild(cross2)
+        
+        // Случайная позиция
+        let margin: CGFloat = 50
+        let randomX = CGFloat.random(in: margin...(size.width - margin))
+        let randomY = CGFloat.random(in: margin...(size.height - margin))
+        medkit.position = CGPoint(x: randomX, y: randomY)
+        
+        // Физика
+        let body = SKPhysicsBody(rectangleOf: CGSize(width: 20, height: 20))
+        body.isDynamic = false
+        body.categoryBitMask = medkitCategory
+        body.contactTestBitMask = playerCategory
+        medkit.physicsBody = body
+        
+        medkit.name = "medkit"
+        addChild(medkit)
+        
+        // Удаление через 5 секунд
+        let fadeOut = SKAction.fadeOut(withDuration: 0.5)
+        let remove = SKAction.removeFromParent()
+        let wait = SKAction.wait(forDuration: 5)
+        medkit.run(SKAction.sequence([wait, fadeOut, remove]))
+    }
+    
+    // Добавим стрельбу врагов
+    private func enemyShoot(from enemy: SKNode) {
+        guard let playerTank = playerTank else { return }
+        
+        let bulletNode = SKNode()
+        bulletNode.name = "enemyBullet"
+        
+        let bulletSize = CGSize(width: 4, height: 8)
+        let bullet = SKShapeNode(rectOf: bulletSize, cornerRadius: 1)
+        bullet.fillColor = .red
+        bullet.strokeColor = .red
+        bulletNode.addChild(bullet)
+        
+        let startPos = enemy.convert(CGPoint(x: 0, y: 12), to: self)
+        bulletNode.position = startPos
+        
+        let bulletBody = SKPhysicsBody(rectangleOf: bulletSize)
+        bulletBody.isDynamic = true
+        bulletBody.affectedByGravity = false
+        bulletBody.categoryBitMask = enemyBulletCategory
+        bulletBody.contactTestBitMask = playerCategory
+        bulletBody.collisionBitMask = 0
+        bulletBody.usesPreciseCollisionDetection = true
+        bulletNode.physicsBody = bulletBody
+        
+        addChild(bulletNode)
+        
+        let dx = playerTank.position.x - startPos.x
+        let dy = playerTank.position.y - startPos.y
+        let angle = atan2(dy, dx)
+        
+        let speed: CGFloat = 300
+        bulletBody.velocity = CGVector(dx: cos(angle) * speed,
+                                     dy: sin(angle) * speed)
+        
+        bulletNode.zRotation = angle + .pi/2
+        
+        let wait = SKAction.wait(forDuration: 2)
+        let remove = SKAction.removeFromParent()
+        bulletNode.run(SKAction.sequence([wait, remove]))
+    }
+    
+    // Добавим метод получения урона
+    private func damagePlayer(amount: Int) {
+        playerHealth -= amount
+        
+        // Визуальный эффект получения урона
+        let flashAction = SKAction.sequence([
+            SKAction.colorize(with: .red, colorBlendFactor: 1.0, duration: 0.1),
+            SKAction.wait(forDuration: 0.1),
+            SKAction.colorize(withColorBlendFactor: 0.0, duration: 0.1)
+        ])
+        
+        playerTank?.run(flashAction)
+        
+        // Проверяем смерть игрока
+        if playerHealth <= 0 {
+            gameOver()
+        }
+    }
+    
+    // Добавим метод spawnEnemies()
+    private func spawnEnemies() {
+        // Останавливаем предыдущий спавн если был
+        removeAction(forKey: "spawning")
+        
+        // Создаем последовательность действий для спавна
+        let spawn = SKAction.run { [weak self] in
+            guard let self = self else { return }
+            if self.spawnCount < self.maxEnemies {
+                self.spawnEnemyTank()
+                self.spawnCount += 1
+            }
+        }
+        
+        let wait = SKAction.wait(forDuration: 2.0)
+        let sequence = SKAction.sequence([wait, spawn])
+        let spawnForever = SKAction.repeatForever(sequence)
+        
+        // Запускаем спавн с уникальным ключом
+        run(spawnForever, withKey: "spawning")
+    }
+    
+    // Добавим обработку касаний в паузе
+    private func handlePausedTouches(at location: CGPoint) {
+        if let restart = restartButton,
+           restart.contains(location) {
+            restartGame()
+        }
+    }
+    
+    // Обновим метод createExplosion для более компактного эффекта
+    private func createExplosion(at position: CGPoint, type: ExplosionType = .medium) {
+        let config = type.config
+        
+        // 1. Основной взрыв (компактный)
+        let explosion = SKEmitterNode()
+        explosion.particleTexture = SKTexture(imageNamed: "explosion_particle")
+        explosion.particleBirthRate = 1000
+        explosion.numParticlesToEmit = config.particles
+        explosion.particleLifetime = 0.15
+        explosion.particleLifetimeRange = 0.1
+        explosion.particleSpeed = config.speed
+        explosion.particleSpeedRange = config.speed/2
+        explosion.emissionAngle = 0
+        explosion.emissionAngleRange = .pi * 2
+        explosion.particleAlpha = 0.8
+        explosion.particleAlphaSpeed = -2
+        explosion.particleScale = 0.2 * config.scale
+        explosion.particleScaleRange = 0.1
+        explosion.particleScaleSpeed = -0.3
+        explosion.particleColorSequence = {
+            let sequence = SKKeyframeSequence(keyframeValues: [
+                UIColor(red: 1, green: 0.9, blue: 0.5, alpha: 1), // Яркий центр
+                UIColor(red: 1, green: 0.6, blue: 0, alpha: 1),   // Оранжевый
+                UIColor(red: 0.3, green: 0.3, blue: 0.3, alpha: 0.5) // Дым
+            ], times: [0, 0.3, 1])
+            sequence.interpolationMode = .linear
+            return sequence
+        }()
+        explosion.targetNode = self
+        
+        // 2. Искры (минимальные)
+        let sparks = SKEmitterNode()
+        sparks.particleTexture = SKTexture(imageNamed: "spark_particle")
+        sparks.particleBirthRate = 800
+        sparks.numParticlesToEmit = config.particles
+        sparks.particleLifetime = 0.2
+        sparks.particleSpeed = config.speed
+        sparks.particleSpeedRange = config.speed/2
+        sparks.emissionAngle = 0
+        sparks.emissionAngleRange = .pi * 2
+        sparks.particleAlpha = 0.8
+        sparks.particleAlphaSpeed = -2
+        sparks.particleScale = 0.1 * config.scale
+        sparks.particleScaleRange = 0.05
+        sparks.particleColor = .yellow
+        sparks.targetNode = self
+        
+        // Позиционируем эффекты
+        [explosion, sparks].forEach {
+            $0.position = position
+            $0.zPosition = 100 // Поверх других элементов
+            addChild($0)
+        }
+        
+        // Компактная вспышка
+        let flash = SKSpriteNode(color: .white, size: CGSize(width: 40 * config.scale,
+                                                            height: 40 * config.scale))
+        flash.position = position
+        flash.alpha = 0.7
+        flash.setScale(0.1)
+        flash.blendMode = .add
+        flash.zPosition = 99
+        addChild(flash)
+        
+        // Быстрая анимация вспышки
+        let scaleUp = SKAction.scale(to: 1.5, duration: 0.05)
+        let fadeOut = SKAction.fadeOut(withDuration: 0.1)
+        let remove = SKAction.removeFromParent()
+        flash.run(SKAction.sequence([scaleUp, fadeOut, remove]))
+        
+        // Быстрое удаление эффектов
+        let wait = SKAction.wait(forDuration: config.duration)
+        let cleanup = SKAction.run {
+            [explosion, sparks].forEach { $0.removeFromParent() }
+        }
+        run(SKAction.sequence([wait, cleanup]))
     }
 }
